@@ -1,0 +1,100 @@
+<?php
+class OAuthConfig {
+    private static $clientId = null;
+    private static $clientSecret = null;
+
+    public static function setConfig($clientId, $clientSecret) {
+        if (empty($clientId) || empty($clientSecret)) {
+            throw new Exception('Client ID and Client Secret must be provided and non-empty.');
+        }
+        self::$clientId = $clientId;
+        self::$clientSecret = $clientSecret;
+    }
+
+    public static function getClientId() {
+        return self::$clientId;
+    }
+
+    public static function getClientSecret() {
+        return self::$clientSecret;
+    }
+}
+
+class OAuthService {
+    const AUTH_URL = "https://launchpad.classlink.com/oauth2/v2/auth";
+    const EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token";
+    const INFO_URL = "https://nodeapi.classlink.com/";
+
+    public static function getCodeUrl($scope = 'profile', $redirectUri = 'http://localhost:8080/code') {
+        if (empty(OAuthConfig::getClientId())) {
+            throw new Exception('Configuration not set. Call setConfig before requesting the URL.');
+        }
+
+        $queryParams = http_build_query([
+            'client_id' => OAuthConfig::getClientId(),
+            'scope' => $scope,
+            'redirect_uri' => $redirectUri,
+            'response_type' => 'code'
+        ]);
+
+        return self::AUTH_URL . '?' . $queryParams;
+    }
+
+    public static function getToken($code) {
+        if (empty(OAuthConfig::getClientId()) || empty(OAuthConfig::getClientSecret())) {
+            throw new Exception('Configuration not set. Call setConfig before requesting the token.');
+        }
+        if (empty($code)) {
+            throw new Exception('Code must be a non-empty string.');
+        }
+
+        $params = http_build_query([
+            'client_id' => OAuthConfig::getClientId(),
+            'client_secret' => OAuthConfig::getClientSecret(),
+            'code' => $code
+        ]);
+
+        return self::curlPost(self::EXCHANGE_URL, $params);
+    }
+
+    public static function getInfo($bearer, $endpoint, $extractNode = null) {
+        if (empty($bearer) || empty($endpoint)) {
+            throw new Exception('Bearer token and endpoint must be non-empty strings.');
+        }
+
+        $headers = ["Authorization: Bearer $bearer"];
+        $result = self::curlGet(self::INFO_URL . $endpoint, $headers);
+        if ($extractNode !== null) {
+            $result = array_intersect_key($result, array_flip($extractNode));
+        }
+        return $result;
+    }
+
+    private static function curlGet($url, $headers = []) {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $response = curl_exec($ch);
+        if (!$response) {
+            throw new Exception('CURL Error: ' . curl_error($ch));
+        }
+        curl_close($ch);
+        return json_decode($response, true);
+    }
+
+    private static function curlPost($url, $params, $headers = []) {
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, array_merge($headers, ['Content-Type: application/x-www-form-urlencoded']));
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        $response = curl_exec($ch);
+        if (!$response) {
+            throw new Exception('CURL Error: ' . curl_error($ch));
+        }
+        curl_close($ch);
+        return json_decode($response, true);
+    }
+}
