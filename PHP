@@ -1,9 +1,24 @@
 <?php
-class OAuthConfig {
+require 'net/http'
+require 'uri'
+require 'json'
+
+// Class responsible for handling OAuth interactions including setting configuration,
+// generating authorization URLs, obtaining access tokens, and making API requests.
+class OAuthService
+{
+    // Class-level variables to store OAuth credentials
     private static $clientId = null;
     private static $clientSecret = null;
 
-    public static function setConfig($clientId, $clientSecret) {
+    // URLs for OAuth and API endpoints
+    const AUTH_URL = "https://launchpad.classlink.com/oauth2/v2/auth";
+    const EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token";
+    const INFO_URL = "https://nodeapi.classlink.com/";
+
+    // Set OAuth client configuration settings
+    public static function setConfig($clientId, $clientSecret)
+    {
         if (empty($clientId) || empty($clientSecret)) {
             throw new Exception('Client ID and Client Secret must be provided and non-empty.');
         }
@@ -11,90 +26,60 @@ class OAuthConfig {
         self::$clientSecret = $clientSecret;
     }
 
-    public static function getClientId() {
-        return self::$clientId;
-    }
-
-    public static function getClientSecret() {
-        return self::$clientSecret;
-    }
-}
-
-class OAuthService {
-    const AUTH_URL = "https://launchpad.classlink.com/oauth2/v2/auth";
-    const EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token";
-    const INFO_URL = "https://nodeapi.classlink.com/";
-
-    public static function getCodeUrl($scope = 'profile', $redirectUri = 'http://localhost:8080/code') {
-        if (empty(OAuthConfig::getClientId())) {
+    // Generates the URL for obtaining the OAuth authorization code
+    public static function getCodeUrl($scope = 'profile', $redirectUri = 'http://localhost:8080/code')
+    {
+        if (empty(self::$clientId)) {
             throw new Exception('Configuration not set. Call setConfig before requesting the URL.');
         }
 
-        $queryParams = http_build_query([
-            'client_id' => OAuthConfig::getClientId(),
+        $uri = new URI(self::AUTH_URL);
+        $uri->query = http_build_query([
+            'client_id' => self::$clientId,
             'scope' => $scope,
             'redirect_uri' => $redirectUri,
             'response_type' => 'code'
         ]);
-
-        return self::AUTH_URL . '?' . $queryParams;
+        return $uri->toString();
     }
 
-    public static function getToken($code) {
-        if (empty(OAuthConfig::getClientId()) || empty(OAuthConfig::getClientSecret())) {
+    // Retrieves an access token using an authorization code
+    public static function getToken($code)
+    {
+        if (empty(self::$clientId) || empty(self::$clientSecret)) {
             throw new Exception('Configuration not set. Call setConfig before requesting the token.');
         }
         if (empty($code)) {
             throw new Exception('Code must be a non-empty string.');
         }
 
-        $params = http_build_query([
-            'client_id' => OAuthConfig::getClientId(),
-            'client_secret' => OAuthConfig::getClientSecret(),
+        $uri = new URI(self::EXCHANGE_URL);
+        $response = Net::HTTP.post_form($uri, [
+            'client_id' => self::$clientId,
+            'client_secret' => self::$clientSecret,
             'code' => $code
         ]);
-
-        return self::curlPost(self::EXCHANGE_URL, $params);
+        $result = json_decode($response->body);
+        if (!isset($result->access_token)) {
+            throw new Exception('Token not found in the response');
+        }
+        return $result->access_token;
     }
 
-    public static function getInfo($bearer, $endpoint, $extractNode = null) {
+    // Makes a GET request to an API endpoint using an access token
+    public static function getInfo($bearer, $endpoint)
+    {
         if (empty($bearer) || empty($endpoint)) {
             throw new Exception('Bearer token and endpoint must be non-empty strings.');
         }
 
-        $headers = ["Authorization: Bearer $bearer"];
-        $result = self::curlGet(self::INFO_URL . $endpoint, $headers);
-        if ($extractNode !== null) {
-            $result = array_intersect_key($result, array_flip($extractNode));
-        }
-        return $result;
-    }
+        $uri = new URI(self::INFO_URL . $endpoint);
+        $request = new Net::HTTP::Get($uri);
+        $request['Authorization'] = "Bearer {$bearer}";
 
-    private static function curlGet($url, $headers = []) {
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        $response = curl_exec($ch);
-        if (!$response) {
-            throw new Exception('CURL Error: ' . curl_error($ch));
-        }
-        curl_close($ch);
-        return json_decode($response, true);
-    }
-
-    private static function curlPost($url, $params, $headers = []) {
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, array_merge($headers, ['Content-Type: application/x-www-form-urlencoded']));
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $params);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        $response = curl_exec($ch);
-        if (!$response) {
-            throw new Exception('CURL Error: ' . curl_error($ch));
-        }
-        curl_close($ch);
-        return json_decode($response, true);
+        $response = Net::HTTP.start($uri->hostname, $uri->port, ['use_ssl' => $uri->scheme === 'https']) do |http|
+            http.request(request);
+        end;
+        return json_decode($response->body);
     }
 }
