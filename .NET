@@ -1,0 +1,109 @@
+using System;
+using System.Net.Http;
+using System.Threading.Tasks;
+using System.Web;
+using Newtonsoft.Json;
+
+public static class OAuthConfig
+{
+    public static string ClientId { get; set; }
+    public static string ClientSecret { get; set; }
+}
+
+public class ConstUrls
+{
+    public const string AuthUrl = "https://launchpad.classlink.com/oauth2/v2/auth";
+    public const string ExchangeUrl = "https://launchpad.classlink.com/oauth2/v2/token";
+    public const string InfoUrl = "https://nodeapi.classlink.com/";
+}
+
+public class OAuthService
+{
+    private static readonly HttpClient httpClient = new HttpClient();
+
+    public static void SetConfig(string clientId, string clientSecret)
+    {
+        if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
+        {
+            throw new ArgumentException("Client ID and Client Secret must be non-empty strings.");
+        }
+
+        OAuthConfig.ClientId = clientId;
+        OAuthConfig.ClientSecret = clientSecret;
+    }
+
+    public static string GetCodeUrl(string scope = "profile", string redirectUri = "http://localhost:8080/code")
+    {
+        if (string.IsNullOrEmpty(OAuthConfig.ClientId))
+        {
+            throw new InvalidOperationException("Configuration not set. Call SetConfig before requesting the URL.");
+        }
+
+        var query = HttpUtility.ParseQueryString(string.Empty);
+        query["client_id"] = OAuthConfig.ClientId;
+        query["scope"] = scope;
+        query["redirect_uri"] = redirectUri;
+        query["response_type"] = "code";
+
+        return $"{ConstUrls.AuthUrl}?{query}";
+    }
+
+    public static async Task<string> GetTokenAsync(string code)
+    {
+        if (string.IsNullOrEmpty(OAuthConfig.ClientId) || string.IsNullOrEmpty(OAuthConfig.ClientSecret))
+        {
+            throw new InvalidOperationException("Configuration not set. Call SetConfig before requesting the token.");
+        }
+
+        if (string.IsNullOrEmpty(code))
+        {
+            throw new ArgumentException("Code must be a non-empty string.");
+        }
+
+        var content = new FormUrlEncodedContent(new[]
+        {
+            new KeyValuePair<string, string>("client_id", OAuthConfig.ClientId),
+            new KeyValuePair<string, string>("client_secret", OAuthConfig.ClientSecret),
+            new KeyValuePair<string, string>("code", code)
+        });
+
+        var response = await httpClient.PostAsync(ConstUrls.ExchangeUrl, content);
+        response.EnsureSuccessStatusCode();
+
+        var responseContent = await response.Content.ReadAsStringAsync();
+        return JsonConvert.DeserializeObject<dynamic>(responseContent).access_token;
+    }
+
+    public static async Task<dynamic> GetInfoAsync(string bearer, string endpoint, string[] extractNode = null)
+    {
+        if (string.IsNullOrEmpty(bearer) || string.IsNullOrEmpty(endpoint))
+        {
+            throw new ArgumentException("Bearer token and endpoint must be non-empty strings.");
+        }
+
+        var request = new HttpRequestMessage(HttpMethod.Get, $"{ConstUrls.InfoUrl}{endpoint}");
+        request.Headers.Add("Authorization", $"Bearer {bearer}");
+
+        var response = await httpClient.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+
+        var content = await response.Content.ReadAsStringAsync();
+        var jsonContent = JsonConvert.DeserializeObject<dynamic>(content);
+
+        if (extractNode == null)
+        {
+            return jsonContent;
+        }
+
+        var result = new Newtonsoft.Json.Linq.JObject();
+        foreach (var node in extractNode)
+        {
+            if (jsonContent[node] != null)
+            {
+                result[node] = jsonContent[node];
+            }
+        }
+
+        return result;
+    }
+}
