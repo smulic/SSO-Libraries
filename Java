@@ -1,0 +1,82 @@
+import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.http.HttpResponse.BodyHandlers;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.StringJoiner;
+
+public class OAuthService {
+    private static String clientId = null;
+    private static String clientSecret = null;
+
+    private static final String AUTH_URL = "https://launchpad.classlink.com/oauth2/v2/auth";
+    private static final String EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token";
+    private static final String INFO_URL = "https://nodeapi.classlink.com/";
+
+    public static void setConfig(String clientId, String clientSecret) {
+        OAuthService.clientId = clientId;
+        OAuthService.clientSecret = clientSecret;
+    }
+
+    public static String getCodeUrl(String scope, String redirectUri) throws Exception {
+        if (clientId == null || clientId.isEmpty()) {
+            throw new Exception("Configuration not set. Call setConfig before requesting the URL.");
+        }
+        Map<String, String> parameters = new HashMap<>();
+        parameters.put("client_id", clientId);
+        parameters.put("scope", scope);
+        parameters.put("redirect_uri", redirectUri);
+        parameters.put("response_type", "code");
+
+        return AUTH_URL + "?" + encodeParameters(parameters);
+    }
+
+    public static String getToken(String code) throws IOException, InterruptedException {
+        if (clientId == null || clientSecret == null || clientId.isEmpty() || clientSecret.isEmpty()) {
+            throw new IllegalStateException("Configuration not set. Call setConfig before requesting the token.");
+        }
+        if (code == null || code.isEmpty()) {
+            throw new IllegalArgumentException("Code must be a non-empty string.");
+        }
+
+        Map<String, String> parameters = new HashMap<>();
+        parameters.put("client_id", clientId);
+        parameters.put("client_secret", clientSecret);
+        parameters.put("code", code);
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(EXCHANGE_URL))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(encodeParameters(parameters)))
+                .build();
+
+        HttpResponse<String> response = HttpClient.newHttpClient().send(request, BodyHandlers.ofString());
+        return response.body(); // Here you would parse the JSON to extract the access token
+    }
+
+    public static String getInfo(String bearer, String endpoint) throws IOException, InterruptedException {
+        if (bearer == null || bearer.isEmpty() || endpoint == null || endpoint.isEmpty()) {
+            throw new IllegalArgumentException("Bearer token and endpoint must be non-empty strings.");
+        }
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(INFO_URL + endpoint))
+                .header("Authorization", "Bearer " + bearer)
+                .GET()
+                .build();
+
+        HttpResponse<String> response = HttpClient.newHttpClient().send(request, BodyHandlers.ofString());
+        return response.body(); // Here you would parse the JSON and possibly extract specific nodes
+    }
+
+    private static String encodeParameters(Map<String, String> parameters) {
+        StringJoiner sj = new StringJoiner("&");
+        parameters.forEach((key, value) -> sj.add(URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8)));
+        return sj.toString();
+    }
+}
