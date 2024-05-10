@@ -1,0 +1,106 @@
+const express = require('express');
+const axios = require('axios');
+const querystring = require('querystring');
+
+const app = express();
+app.use(express.json());
+
+const config = {
+    clientId: null,
+    clientSecret: null
+};
+
+const urls = {
+    authUrl: "https://launchpad.classlink.com/oauth2/v2/auth",
+    exchangeUrl: "https://launchpad.classlink.com/oauth2/v2/token",
+    infoUrl: "https://nodeapi.classlink.com/"
+};
+
+// Set OAuth configuration
+function setConfig(clientId, clientSecret) {
+    if (!clientId || !clientSecret) {
+        throw new Error('Client ID and Client Secret must be provided and non-empty.');
+    }
+    config.clientId = clientId;
+    config.clientSecret = clientSecret;
+}
+
+// Get the URL for authorization code
+function getCodeUrl(scope = 'profile', redirectUri = 'http://localhost:8080/code') {
+    if (!config.clientId) {
+        throw new Error('Configuration not set. Call setConfig before requesting the URL.');
+    }
+    const query = querystring.stringify({
+        client_id: config.clientId,
+        scope: scope,
+        redirect_uri: redirectUri,
+        response_type: 'code'
+    });
+    return `${urls.authUrl}?${query}`;
+}
+
+// Async function to get the access token
+async function getToken(code) {
+    if (!config.clientId || !config.clientSecret) {
+        throw new Error('Configuration not set. Call setConfig before requesting the token.');
+    }
+    if (!code) {
+        throw new Error('Code must be a non-empty string.');
+    }
+    const params = querystring.stringify({
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        code: code
+    });
+    const response = await axios.post(urls.exchangeUrl, params, {
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+    });
+    return response.data.access_token;
+}
+
+// Async function to make an API request to the specified endpoint
+async function getInfo(bearer, endpoint, extractNode = null) {
+    if (!bearer || !endpoint) {
+        throw new Error('Bearer token and endpoint must be non-empty strings.');
+    }
+    const response = await axios.get(`${urls.infoUrl}${endpoint}`, {
+        headers: {
+            'Authorization': `Bearer ${bearer}`
+        }
+    });
+    const content = response.data;
+    if (!extractNode) {
+        return content;
+    }
+    return extractNode.reduce((acc, node) => {
+        if (content[node] !== undefined) {
+            acc[node] = content[node];
+        }
+        return acc;
+    }, {});
+}
+
+// Example usage
+app.get('/getAuthUrl', (req, res) => {
+    try {
+        const url = getCodeUrl();
+        res.send({ url });
+    } catch (error) {
+        res.status(500).send({ error: error.message });
+    }
+});
+
+app.post('/getToken', async (req, res) => {
+    try {
+        const token = await getToken(req.body.code);
+        res.send({ token });
+    } catch (error) {
+        res.status(500).send({ error: error.message });
+    }
+});
+
+app.listen(8080, () => console.log('Server running on http://localhost:8080'));
+
+module.exports = { setConfig, getCodeUrl, getToken, getInfo };
