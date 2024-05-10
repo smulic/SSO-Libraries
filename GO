@@ -1,0 +1,114 @@
+package oauthservice
+
+import (
+    "bytes"
+    "encoding/json"
+    "errors"
+    "fmt"
+    "io/ioutil"
+    "net/http"
+    "net/url"
+    "strings"
+)
+
+// Global variables for storing OAuth configuration.
+var (
+    clientId     string
+    clientSecret string
+    httpClient   = &http.Client{}  // HTTP client used for sending requests.
+)
+
+// Constants for the OAuth and API URLs.
+const (
+    authURL     = "https://launchpad.classlink.com/oauth2/v2/auth"
+    exchangeURL = "https://launchpad.classlink.com/oauth2/v2/token"
+    infoURL     = "https://nodeapi.classlink.com/"
+)
+
+// SetConfig sets the client ID and secret for OAuth operations.
+func SetConfig(id, secret string) error {
+    if id == "" || secret == "" {
+        return errors.New("client ID and client Secret must be provided and non-empty")
+    }
+    clientId = id
+    clientSecret = secret
+    return nil
+}
+
+// GetCodeURL generates the URL needed for obtaining the authorization code.
+// It requires a scope and a redirect URI as parameters.
+func GetCodeURL(scope, redirectURI string) (string, error) {
+    if clientId == "" {
+        return "", errors.New("configuration not set. Call SetConfig before requesting the URL")
+    }
+    params := url.Values{}
+    params.Add("client_id", clientId)
+    params.Add("scope", scope)
+    params.Add("redirect_uri", redirectURI)
+    params.Add("response_type", "code")
+    return fmt.Sprintf("%s?%s", authURL, params.Encode()), nil
+}
+
+// GetToken requests the access token using the provided authorization code.
+func GetToken(code string) (string, error) {
+    if clientId == "" || clientSecret == "" {
+        return "", errors.New("configuration not set. Call SetConfig before requesting the token")
+    }
+    if code == "" {
+        return "", errors.New("code must be a non-empty string")
+    }
+
+    data := url.Values{}
+    data.Set("client_id", clientId)
+    data.Set("client_secret", clientSecret)
+    data.Set("code", code)
+
+    req, err := http.NewRequest("POST", exchangeURL, strings.NewReader(data.Encode()))
+    if err != nil {
+        return "", err
+    }
+    req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+    resp, err := httpClient.Do(req)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
+    body, err := ioutil.ReadAll(resp.Body)
+    if err != nil {
+        return "", err
+    }
+    var tokenResponse map[string]interface{}
+    json.Unmarshal(body, &tokenResponse)
+    if token, ok := tokenResponse["access_token"].(string); ok {
+        return token, nil
+    }
+    return "", errors.New("token not found in the response")
+}
+
+// GetInfo makes a GET request to a specified endpoint using the access token for authorization.
+func GetInfo(bearer, endpoint string) (map[string]interface{}, error) {
+    if bearer == "" || endpoint == "" {
+        return nil, errors.New("bearer token and endpoint must be non-empty strings")
+    }
+
+    req, err := http.NewRequest("GET", infoURL+endpoint, nil)
+    if err != nil {
+        return nil, err
+    }
+    req.Header.Add("Authorization", "Bearer "+bearer)
+
+    resp, err := httpClient.Do(req)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+    body, err := ioutil.ReadAll(resp.Body)
+    if err != nil {
+        return nil, err
+    }
+
+    var infoResponse map[string]interface{}
+    json.Unmarshal(body, &infoResponse)
+    return infoResponse, nil
+}
