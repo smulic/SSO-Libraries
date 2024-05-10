@@ -4,12 +4,14 @@ using System.Threading.Tasks;
 using System.Web;
 using Newtonsoft.Json;
 
+// Configuration class to store OAuth credentials
 public static class OAuthConfig
 {
     public static string ClientId { get; set; }
     public static string ClientSecret { get; set; }
 }
 
+// Static class to hold the constant URLs used in the OAuth process
 public class ConstUrls
 {
     public const string AuthUrl = "https://launchpad.classlink.com/oauth2/v2/auth";
@@ -17,10 +19,13 @@ public class ConstUrls
     public const string InfoUrl = "https://nodeapi.classlink.com/";
 }
 
+// Service class to handle OAuth operations
 public class OAuthService
 {
+    // HttpClient is intended to be instantiated once and re-used throughout the life of an application.
     private static readonly HttpClient httpClient = new HttpClient();
 
+    // Set the configuration with client ID and client secret
     public static void SetConfig(string clientId, string clientSecret)
     {
         if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
@@ -32,6 +37,7 @@ public class OAuthService
         OAuthConfig.ClientSecret = clientSecret;
     }
 
+    // Generate the URL needed to get the authorization code from the authorization server
     public static string GetCodeUrl(string scope = "profile", string redirectUri = "http://localhost:8080/code")
     {
         if (string.IsNullOrEmpty(OAuthConfig.ClientId))
@@ -48,6 +54,7 @@ public class OAuthService
         return $"{ConstUrls.AuthUrl}?{query}";
     }
 
+    // Asynchronously get the access token using the authorization code
     public static async Task<string> GetTokenAsync(string code)
     {
         if (string.IsNullOrEmpty(OAuthConfig.ClientId) || string.IsNullOrEmpty(OAuthConfig.ClientSecret))
@@ -74,6 +81,7 @@ public class OAuthService
         return JsonConvert.DeserializeObject<dynamic>(responseContent).access_token;
     }
 
+    // Asynchronously make an API request to the specified endpoint and optionally extract specific nodes from the JSON response
     public static async Task<dynamic> GetInfoAsync(string bearer, string endpoint, string[] extractNode = null)
     {
         if (string.IsNullOrEmpty(bearer) || string.IsNullOrEmpty(endpoint))
