@@ -1,114 +1,200 @@
-package oauthservice
+package main
 
 import (
-    "bytes"
-    "encoding/json"
-    "errors"
-    "fmt"
-    "io/ioutil"
-    "net/http"
-    "net/url"
-    "strings"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
 )
 
-// Global variables for storing OAuth configuration.
-var (
-    clientId     string
-    clientSecret string
-    httpClient   = &http.Client{}  // HTTP client used for sending requests.
-)
+// Custom error for configuration errors
+type ConfigNotSetError struct {
+	Message string
+}
 
-// Constants for the OAuth and API URLs.
+func (e *ConfigNotSetError) Error() string {
+	return fmt.Sprintf("The config is not set. You need to call setConfig(client_Id, client_Secret) before %s", e.Message)
+}
+
+// Struct to hold constant URLs used for authentication and API requests
+type CONST struct{}
+
 const (
-    authURL     = "https://launchpad.classlink.com/oauth2/v2/auth"
-    exchangeURL = "https://launchpad.classlink.com/oauth2/v2/token"
-    infoURL     = "https://nodeapi.classlink.com/"
+	AUTH_URL    = "https://launchpad.classlink.com/oauth2/v2/auth"
+	EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token"
+	INFO_URL     = "https://nodeapi.classlink.com/"
 )
 
-// SetConfig sets the client ID and secret for OAuth operations.
-func SetConfig(id, secret string) error {
-    if id == "" || secret == "" {
-        return errors.New("client ID and client Secret must be provided and non-empty")
-    }
-    clientId = id
-    clientSecret = secret
-    return nil
+// Global variables to store client ID and client secret
+var clientId string
+var clientSecret string
+
+// Function to set the client ID and client secret
+func setConfig(client_Id, client_Secret string) error {
+	if client_Id == "" {
+		return errors.New("clientId must be a string")
+	}
+	if client_Secret == "" {
+		return errors.New("clientSecret must be a string")
+	}
+	clientId = client_Id
+	clientSecret = client_Secret
+	return nil
 }
 
-// GetCodeURL generates the URL needed for obtaining the authorization code.
-// It requires a scope and a redirect URI as parameters.
-func GetCodeURL(scope, redirectURI string) (string, error) {
-    if clientId == "" {
-        return "", errors.New("configuration not set. Call SetConfig before requesting the URL")
-    }
-    params := url.Values{}
-    params.Add("client_id", clientId)
-    params.Add("scope", scope)
-    params.Add("redirect_uri", redirectURI)
-    params.Add("response_type", "code")
-    return fmt.Sprintf("%s?%s", authURL, params.Encode()), nil
+// Function to generate the authorization URL
+func getCodeURL(scope, redirectURI string) (string, error) {
+	if clientId == "" {
+		return "", &ConfigNotSetError{"getCodeURL"}
+	}
+	if scope == "" {
+		scope = "profile"
+	}
+	if redirectURI == "" {
+		redirectURI = "http://localhost:8080/code"
+	}
+	queryParams := url.Values{
+		"client_id":     {clientId},
+		"scope":         {scope},
+		"redirect_uri":  {redirectURI},
+		"response_type": {"code"},
+	}
+	return fmt.Sprintf("%s?%s", AUTH_URL, queryParams.Encode()), nil
 }
 
-// GetToken requests the access token using the provided authorization code.
-func GetToken(code string) (string, error) {
-    if clientId == "" || clientSecret == "" {
-        return "", errors.New("configuration not set. Call SetConfig before requesting the token")
-    }
-    if code == "" {
-        return "", errors.New("code must be a non-empty string")
-    }
+// Function to exchange authorization code for access token
+func getToken(code string) (string, error) {
+	if clientId == "" || clientSecret == "" {
+		return "", &ConfigNotSetError{"getToken"}
+	}
+	if code == "" {
+		return "", errors.New("code must be a string")
+	}
+	payload := url.Values{
+		"client_id":     {clientId},
+		"client_secret": {clientSecret},
+		"code":          {code},
+	}
+	resp, err := http.PostForm(EXCHANGE_URL, payload)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
 
-    data := url.Values{}
-    data.Set("client_id", clientId)
-    data.Set("client_secret", clientSecret)
-    data.Set("code", code)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("request failed with status: %s", resp.Status)
+	}
 
-    req, err := http.NewRequest("POST", exchangeURL, strings.NewReader(data.Encode()))
-    if err != nil {
-        return "", err
-    }
-    req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
 
-    resp, err := httpClient.Do(req)
-    if err != nil {
-        return "", err
-    }
-    defer resp.Body.Close()
-    body, err := ioutil.ReadAll(resp.Body)
-    if err != nil {
-        return "", err
-    }
-    var tokenResponse map[string]interface{}
-    json.Unmarshal(body, &tokenResponse)
-    if token, ok := tokenResponse["access_token"].(string); ok {
-        return token, nil
-    }
-    return "", errors.New("token not found in the response")
+	accessToken, ok := result["access_token"].(string)
+	if !ok {
+		return "", errors.New("access_token not found in response")
+	}
+	return accessToken, nil
 }
 
-// GetInfo makes a GET request to a specified endpoint using the access token for authorization.
-func GetInfo(bearer, endpoint string) (map[string]interface{}, error) {
-    if bearer == "" || endpoint == "" {
-        return nil, errors.New("bearer token and endpoint must be non-empty strings")
-    }
+// Function to retrieve information from the API
+func getInfo(bearer, endpoint string, extractNode []string) (map[string]interface{}, error) {
+	if bearer == "" {
+		return nil, errors.New("bearer must be a string")
+	}
+	if endpoint == "" {
+		return nil, errors.New("endpoint must be a string")
+	}
 
-    req, err := http.NewRequest("GET", infoURL+endpoint, nil)
-    if err != nil {
-        return nil, err
-    }
-    req.Header.Add("Authorization", "Bearer "+bearer)
+	URL := fmt.Sprintf("%s%s", INFO_URL, endpoint)
+	req, err := http.NewRequest("GET", URL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", bearer))
 
-    resp, err := httpClient.Do(req)
-    if err != nil {
-        return nil, err
-    }
-    defer resp.Body.Close()
-    body, err := ioutil.ReadAll(resp.Body)
-    if err != nil {
-        return nil, err
-    }
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
 
-    var infoResponse map[string]interface{}
-    json.Unmarshal(body, &infoResponse)
-    return infoResponse, nil
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("request failed with status: %s", resp.Status)
+	}
+
+	var content map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&content); err != nil {
+		return nil, err
+	}
+
+	if extractNode == nil {
+		return content, nil
+	}
+
+	result := make(map[string]interface{})
+	for _, node := range extractNode {
+		if value, exists := content[node]; exists {
+			result[node] = value
+		}
+	}
+	return result, nil
+}
+
+// Function to retrieve user information
+func getUserInfo(bearer string) (map[string]interface{}, error) {
+	return getInfo(bearer, "v2/my/info", nil)
+}
+
+// Function to retrieve user district information
+func getUserDistrict(bearer string) (map[string]interface{}, error) {
+	return getInfo(bearer, "v2/my/district", nil)
+}
+
+// Function to retrieve user profiles
+func getUserProfiles(bearer string) (map[string]interface{}, error) {
+	return getInfo(bearer, "v2/my/profiles", nil)
+}
+
+// Function to retrieve user children information
+func getUserChildren(bearer string) (map[string]interface{}, error) {
+	return getInfo(bearer, "v2/my/students", nil)
+}
+
+// Function to retrieve user groups
+func getUserGroups(bearer string) (map[string]interface{}, error) {
+	return getInfo(bearer, "my/groups", nil)
+}
+
+func main() {
+	// Example usage
+	err := setConfig("your_client_id", "your_client_secret")
+	if err != nil {
+		fmt.Println("Error setting config:", err)
+		return
+	}
+
+	authURL, err := getCodeURL("", "")
+	if err != nil {
+		fmt.Println("Error getting auth URL:", err)
+		return
+	}
+	fmt.Println("Auth URL:", authURL)
+
+	token, err := getToken("your_authorization_code")
+	if err != nil {
+		fmt.Println("Error getting token:", err)
+		return
+	}
+	fmt.Println("Access Token:", token)
+
+	userInfo, err := getUserInfo(token)
+	if err != nil {
+		fmt.Println("Error getting user info:", err)
+		return
+	}
+	fmt.Println("User Info:", userInfo)
 }
