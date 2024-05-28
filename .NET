@@ -1,117 +1,167 @@
 using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading.Tasks;
-using System.Web;
 using Newtonsoft.Json;
 
-// Configuration class to store OAuth credentials
-public static class OAuthConfig
+namespace MyNamespace
 {
-    public static string ClientId { get; set; }
-    public static string ClientSecret { get; set; }
-}
-
-// Static class to hold the constant URLs used in the OAuth process
-public class ConstUrls
-{
-    public const string AuthUrl = "https://launchpad.classlink.com/oauth2/v2/auth";
-    public const string ExchangeUrl = "https://launchpad.classlink.com/oauth2/v2/token";
-    public const string InfoUrl = "https://nodeapi.classlink.com/";
-}
-
-// Service class to handle OAuth operations
-public class OAuthService
-{
-    // HttpClient is intended to be instantiated once and re-used throughout the life of an application.
-    private static readonly HttpClient httpClient = new HttpClient();
-
-    // Set the configuration with client ID and client secret
-    public static void SetConfig(string clientId, string clientSecret)
+    // Custom exception for configuration errors
+    public class ConfigNotSetError : Exception
     {
-        if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(clientSecret))
+        public ConfigNotSetError(string value)
+            : base($"The config is not set. You need to call SetConfig(clientId, clientSecret) before {value}")
         {
-            throw new ArgumentException("Client ID and Client Secret must be non-empty strings.");
         }
-
-        OAuthConfig.ClientId = clientId;
-        OAuthConfig.ClientSecret = clientSecret;
     }
 
-    // Generate the URL needed to get the authorization code from the authorization server
-    public static string GetCodeUrl(string scope = "profile", string redirectUri = "http://localhost:8080/code")
+    // Class to hold constant URLs used for authentication and API requests
+    public static class CONST
     {
-        if (string.IsNullOrEmpty(OAuthConfig.ClientId))
-        {
-            throw new InvalidOperationException("Configuration not set. Call SetConfig before requesting the URL.");
-        }
-
-        var query = HttpUtility.ParseQueryString(string.Empty);
-        query["client_id"] = OAuthConfig.ClientId;
-        query["scope"] = scope;
-        query["redirect_uri"] = redirectUri;
-        query["response_type"] = "code";
-
-        return $"{ConstUrls.AuthUrl}?{query}";
+        public const string AuthUrl = "https://launchpad.classlink.com/oauth2/v2/auth";
+        public const string ExchangeUrl = "https://launchpad.classlink.com/oauth2/v2/token";
+        public const string InfoUrl = "https://nodeapi.classlink.com/";
     }
 
-    // Asynchronously get the access token using the authorization code
-    public static async Task<string> GetTokenAsync(string code)
+    // Static class to store global client ID and client secret
+    public static class Config
     {
-        if (string.IsNullOrEmpty(OAuthConfig.ClientId) || string.IsNullOrEmpty(OAuthConfig.ClientSecret))
+        public static string ClientId { get; private set; }
+        public static string ClientSecret { get; private set; }
+
+        // Method to set the client ID and client secret
+        public static void SetConfig(string clientId, string clientSecret)
         {
-            throw new InvalidOperationException("Configuration not set. Call SetConfig before requesting the token.");
-        }
-
-        if (string.IsNullOrEmpty(code))
-        {
-            throw new ArgumentException("Code must be a non-empty string.");
-        }
-
-        var content = new FormUrlEncodedContent(new[]
-        {
-            new KeyValuePair<string, string>("client_id", OAuthConfig.ClientId),
-            new KeyValuePair<string, string>("client_secret", OAuthConfig.ClientSecret),
-            new KeyValuePair<string, string>("code", code)
-        });
-
-        var response = await httpClient.PostAsync(ConstUrls.ExchangeUrl, content);
-        response.EnsureSuccessStatusCode();
-
-        var responseContent = await response.Content.ReadAsStringAsync();
-        return JsonConvert.DeserializeObject<dynamic>(responseContent).access_token;
-    }
-
-    // Asynchronously make an API request to the specified endpoint and optionally extract specific nodes from the JSON response
-    public static async Task<dynamic> GetInfoAsync(string bearer, string endpoint, string[] extractNode = null)
-    {
-        if (string.IsNullOrEmpty(bearer) || string.IsNullOrEmpty(endpoint))
-        {
-            throw new ArgumentException("Bearer token and endpoint must be non-empty strings.");
-        }
-
-        var request = new HttpRequestMessage(HttpMethod.Get, $"{ConstUrls.InfoUrl}{endpoint}");
-        request.Headers.Add("Authorization", $"Bearer {bearer}");
-
-        var response = await httpClient.SendAsync(request);
-        response.EnsureSuccessStatusCode();
-
-        var content = await response.Content.ReadAsStringAsync();
-        var jsonContent = JsonConvert.DeserializeObject<dynamic>(content);
-
-        if (extractNode == null)
-        {
-            return jsonContent;
-        }
-
-        var result = new Newtonsoft.Json.Linq.JObject();
-        foreach (var node in extractNode)
-        {
-            if (jsonContent[node] != null)
+            if (string.IsNullOrEmpty(clientId))
             {
-                result[node] = jsonContent[node];
+                throw new ArgumentException("clientId must be a string");
             }
+
+            if (string.IsNullOrEmpty(clientSecret))
+            {
+                throw new ArgumentException("clientSecret must be a string");
+            }
+
+            ClientId = clientId;
+            ClientSecret = clientSecret;
+        }
+    }
+
+    public static class ApiClient
+    {
+        private static readonly HttpClient HttpClient = new HttpClient();
+
+        // Method to generate the authorization URL
+        public static string GetCodeUrl(string scope = "profile", string redirectUri = "http://localhost:8080/code")
+        {
+            if (string.IsNullOrEmpty(Config.ClientId))
+            {
+                throw new ConfigNotSetError("GetCodeUrl");
+            }
+
+            var queryString = $"client_id={Config.ClientId}&scope={scope}&redirect_uri={redirectUri}&response_type=code";
+            return $"{CONST.AuthUrl}?{queryString}";
         }
 
-        return result;
+        // Method to exchange authorization code for access token
+        public static async Task<string> GetTokenAsync(string code)
+        {
+            if (string.IsNullOrEmpty(Config.ClientId) || string.IsNullOrEmpty(Config.ClientSecret))
+            {
+                throw new ConfigNotSetError("GetToken");
+            }
+
+            if (string.IsNullOrEmpty(code))
+            {
+                throw new ArgumentException("code must be a string");
+            }
+
+            var payload = new Dictionary<string, string>
+            {
+                { "client_id", Config.ClientId },
+                { "client_secret", Config.ClientSecret },
+                { "code", code }
+            };
+
+            var response = await HttpClient.PostAsync(CONST.ExchangeUrl, new FormUrlEncodedContent(payload));
+            response.EnsureSuccessStatusCode();
+            var content = await response.Content.ReadAsStringAsync();
+            dynamic json = JsonConvert.DeserializeObject(content);
+            return json.access_token;
+        }
+
+        // Method to retrieve information from the API
+        public static async Task<Dictionary<string, object>> GetInfoAsync(string bearer, string endpoint, List<string> extractNode = null)
+        {
+            if (string.IsNullOrEmpty(bearer))
+            {
+                throw new ArgumentException("bearer must be a string");
+            }
+
+            if (string.IsNullOrEmpty(endpoint))
+            {
+                throw new ArgumentException("endpoint must be a string");
+            }
+
+            if (extractNode != null && extractNode.GetType() != typeof(List<string>))
+            {
+                throw new ArgumentException("extractNode must be a list of strings");
+            }
+
+            var url = $"{CONST.InfoUrl}{endpoint}";
+            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("Authorization", $"Bearer {bearer}");
+
+            var response = await HttpClient.SendAsync(request);
+            response.EnsureSuccessStatusCode();
+            var content = await response.Content.ReadAsStringAsync();
+            var jsonResponse = JsonConvert.DeserializeObject<Dictionary<string, object>>(content);
+
+            if (extractNode == null)
+            {
+                return jsonResponse;
+            }
+
+            var result = new Dictionary<string, object>();
+            foreach (var node in extractNode)
+            {
+                if (jsonResponse.ContainsKey(node))
+                {
+                    result[node] = jsonResponse[node];
+                }
+            }
+
+            return result;
+        }
+
+        // Method to retrieve user information
+        public static Task<Dictionary<string, object>> GetUserInfoAsync(string bearer)
+        {
+            return GetInfoAsync(bearer, "v2/my/info");
+        }
+
+        // Method to retrieve user district information
+        public static Task<Dictionary<string, object>> GetUserDistrictAsync(string bearer)
+        {
+            return GetInfoAsync(bearer, "v2/my/district");
+        }
+
+        // Method to retrieve user profiles
+        public static Task<Dictionary<string, object>> GetUserProfilesAsync(string bearer)
+        {
+            return GetInfoAsync(bearer, "v2/my/profiles");
+        }
+
+        // Method to retrieve user children information
+        public static Task<Dictionary<string, object>> GetUserChildrenAsync(string bearer)
+        {
+            return GetInfoAsync(bearer, "v2/my/students");
+        }
+
+        // Method to retrieve user groups
+        public static Task<Dictionary<string, object>> GetUserGroupsAsync(string bearer)
+        {
+            return GetInfoAsync(bearer, "my/groups");
+        }
     }
 }
