@@ -1,82 +1,90 @@
 import sys
+from urllib.parse import urlencode
 import requests
 import json
-from urllib.parse import urlencode
+from typing import List, Optional, Dict, Any
 
-# Constants for URLs used in the OAuth process and API requests
-class ConstURL:
+# Custom exception for configuration errors
+class ConfigNotSetError(Exception):
+    def __init__(self, value: str):
+        self.value = f"The config is not set. You need to call setConfig(client_Id, client_Secret) before {value}"
+    def __str__(self) -> str:
+        return repr(self.value)
+
+# Class to hold constant URLs used for authentication and API requests
+class CONST:
     AUTH_URL = "https://launchpad.classlink.com/oauth2/v2/auth"
     EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token"
     INFO_URL = "https://nodeapi.classlink.com/"
 
-# Custom exception for handling configuration errors
-class ConfigNotSetError(Exception):
-    def __init__(self, value):
-        message = f"The config is not set. You need to call setConfig(client_Id, client_Secret) before {value}"
-        super().__init__(message)
+# Global variables to store client ID and client secret
+clientId: Optional[str] = None
+clientSecret: Optional[str] = None
 
-# Global variables to hold client ID and client secret
-client_id = None
-client_secret = None
-
-# Function to set the client ID and secret for OAuth
-def set_config(client_id_input, client_secret_input):
-    global client_id, client_secret
-    if not isinstance(client_id_input, str):
+# Function to set the client ID and client secret
+def setConfig(client_Id: str, client_Secret: str) -> None:
+    global clientId, clientSecret
+    if not isinstance(client_Id, str):
         raise ValueError("clientId must be a string")
-    if not isinstance(client_secret_input, str):
+    if not isinstance(client_Secret, str):
         raise ValueError("clientSecret must be a string")
-    
-    client_id = client_id_input
-    client_secret = client_secret_input
+    clientId = client_Id
+    clientSecret = client_Secret
 
-# Function to construct the URL for obtaining the authorization code
-def get_code_url(scope="profile", redirect_uri="http://localhost:8080/code"):
-    if not client_id:
+# Function to generate the authorization URL
+def getCodeURL(scope: str = "profile", redirectURI: str = "http://localhost:8080/code") -> str:
+    if not clientId:
         raise ConfigNotSetError("getCodeURL")
-    query_str = urlencode({"client_id": client_id, "scope": scope, "redirect_uri": redirect_uri, "response_type": "code"})
-    return f"{ConstURL.AUTH_URL}?{query_str}"
+    queryStr = urlencode({"client_id": clientId, "scope": scope, "redirect_uri": redirectURI, "response_type": "code"})
+    return f"{CONST.AUTH_URL}?{queryStr}"
 
-# Function to obtain the access token using the authorization code
-def get_token(code):
-    if not client_id or not client_secret:
+# Function to exchange authorization code for access token
+def getToken(code: str) -> str:
+    if not clientId or not clientSecret:
         raise ConfigNotSetError("getToken")
     if not isinstance(code, str):
-        raise TypeError("Code must be a string")
-    
-    payload = {'client_id': client_id, 'client_secret': client_secret, 'code': code}
-    response = requests.post(ConstURL.EXCHANGE_URL, data=payload)
-    return json.loads(response.text)["access_token"]
+        raise TypeError("code must be a string")
+    payload = {'client_id': clientId, 'client_secret': clientSecret, 'code': code}
+    resp = requests.post(CONST.EXCHANGE_URL, data=payload)
+    resp.raise_for_status()  # Proper error handling
+    return resp.json()["access_token"]
 
-# Function to make API requests to the specified endpoint and optionally extract specific nodes from the JSON response
-def get_info(bearer, endpoint, extract_node=None):
-    if not isinstance(bearer, str) or not isinstance(endpoint, str):
-        raise TypeError("Bearer and endpoint must be strings")
-    if extract_node is not None and not isinstance(extract_node, list):
-        raise TypeError("Extract node must be a list of strings")
+# Function to retrieve information from the API
+def getInfo(bearer: str, endpoint: str, extractNode: Optional[List[str]] = None) -> Dict[str, Any]:
+    if not isinstance(bearer, str):
+        raise TypeError("bearer must be a string")
+    if not isinstance(endpoint, str):
+        raise TypeError("endpoint must be a string")
+    if extractNode is not None and not isinstance(extractNode, list):
+        raise TypeError("extractNode must be a list of strings")
     
-    url = f"{ConstURL.INFO_URL}{endpoint}"
-    headers = {'Authorization': f"Bearer {bearer}"}
-    response = requests.get(url, headers=headers)
-    content = json.loads(response.text)
-    
-    if extract_node is None:
+    URL = f"{CONST.INFO_URL}{endpoint}"
+    headers = {'Authorization': f'Bearer {bearer}'}
+    resp = requests.get(URL, headers=headers)
+    resp.raise_for_status()  # Proper error handling
+    content = resp.json()
+
+    if extractNode is None:
         return content
     else:
-        return {node: content[node] for node in extract_node if node in content}
+        return {node: content.get(node) for node in extractNode}
 
-# User information retrieval functions
-def get_user_info(bearer):
-    return get_info(bearer, "v2/my/info")
+# Function to retrieve user information
+def getUserInfo(bearer: str) -> Dict[str, Any]:
+    return getInfo(bearer, "v2/my/info")
 
-def get_user_district(bearer):
-    return get_info(bearer, "v2/my/district")
+# Function to retrieve user district information
+def getUserDistrict(bearer: str) -> Dict[str, Any]:
+    return getInfo(bearer, "v2/my/district")
 
-def get_user_profiles(bearer):
-    return get_info(bearer, "v2/my/profiles")
+# Function to retrieve user profiles
+def getUserProfiles(bearer: str) -> Dict[str, Any]:
+    return getInfo(bearer, "v2/my/profiles")
 
-def get_user_children(bearer):
-    return get_info(bearer, "v2/my/students")
+# Function to retrieve user children information
+def getUserChildren(bearer: str) -> Dict[str, Any]:
+    return getInfo(bearer, "v2/my/students")
 
-def get_user_groups(bearer):
-    return get_info(bearer, "my/groups")
+# Function to retrieve user groups
+def getUserGroups(bearer: str) -> Dict[str, Any]:
+    return getInfo(bearer, "my/groups")
