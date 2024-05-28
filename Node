@@ -1,106 +1,121 @@
-const express = require('express');
 const axios = require('axios');
 const querystring = require('querystring');
 
-const app = express();
-app.use(express.json());
-
-const config = {
-    clientId: null,
-    clientSecret: null
-};
-
-const urls = {
-    authUrl: "https://launchpad.classlink.com/oauth2/v2/auth",
-    exchangeUrl: "https://launchpad.classlink.com/oauth2/v2/token",
-    infoUrl: "https://nodeapi.classlink.com/"
-};
-
-// Set OAuth configuration
-function setConfig(clientId, clientSecret) {
-    if (!clientId || !clientSecret) {
-        throw new Error('Client ID and Client Secret must be provided and non-empty.');
+// Custom error for configuration issues
+class ConfigNotSetError extends Error {
+    constructor(value) {
+        super(`The config is not set. You need to call setConfig(client_Id, client_Secret) before ${value}`);
+        this.name = 'ConfigNotSetError';
     }
-    config.clientId = clientId;
-    config.clientSecret = clientSecret;
 }
 
-// Get the URL for authorization code
-function getCodeUrl(scope = 'profile', redirectUri = 'http://localhost:8080/code') {
-    if (!config.clientId) {
-        throw new Error('Configuration not set. Call setConfig before requesting the URL.');
+// Constants class to hold URLs
+const CONST = {
+    AUTH_URL: "https://launchpad.classlink.com/oauth2/v2/auth",
+    EXCHANGE_URL: "https://launchpad.classlink.com/oauth2/v2/token",
+    INFO_URL: "https://nodeapi.classlink.com/"
+};
+
+// Global variables to store client ID and client secret
+let clientId = null;
+let clientSecret = null;
+
+// Function to set the client ID and client secret
+function setConfig(client_Id, client_Secret) {
+    if (typeof client_Id !== 'string') {
+        throw new TypeError("clientId must be a string");
     }
-    const query = querystring.stringify({
-        client_id: config.clientId,
-        scope: scope,
-        redirect_uri: redirectUri,
-        response_type: 'code'
-    });
-    return `${urls.authUrl}?${query}`;
+    if (typeof client_Secret !== 'string') {
+        throw new TypeError("clientSecret must be a string");
+    }
+    clientId = client_Id;
+    clientSecret = client_Secret;
 }
 
-// Async function to get the access token
+// Function to generate the authorization URL
+function getCodeURL(scope = "profile", redirectURI = "http://localhost:8080/code") {
+    if (!clientId) {
+        throw new ConfigNotSetError("getCodeURL");
+    }
+    const queryStr = querystring.stringify({ client_id: clientId, scope, redirect_uri: redirectURI, response_type: "code" });
+    return `${CONST.AUTH_URL}?${queryStr}`;
+}
+
+// Function to exchange authorization code for access token
 async function getToken(code) {
-    if (!config.clientId || !config.clientSecret) {
-        throw new Error('Configuration not set. Call setConfig before requesting the token.');
+    if (!clientId || !clientSecret) {
+        throw new ConfigNotSetError("getToken");
     }
-    if (!code) {
-        throw new Error('Code must be a non-empty string.');
+    if (typeof code !== 'string') {
+        throw new TypeError("code must be a string");
     }
-    const params = querystring.stringify({
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-        code: code
-    });
-    const response = await axios.post(urls.exchangeUrl, params, {
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-    });
-    return response.data.access_token;
+    const payload = { client_id: clientId, client_secret: clientSecret, code };
+    const resp = await axios.post(CONST.EXCHANGE_URL, querystring.stringify(payload));
+    return resp.data.access_token;
 }
 
-// Async function to make an API request to the specified endpoint
+// Function to retrieve information from the API
 async function getInfo(bearer, endpoint, extractNode = null) {
-    if (!bearer || !endpoint) {
-        throw new Error('Bearer token and endpoint must be non-empty strings.');
+    if (typeof bearer !== 'string') {
+        throw new TypeError("bearer must be a string");
     }
-    const response = await axios.get(`${urls.infoUrl}${endpoint}`, {
-        headers: {
-            'Authorization': `Bearer ${bearer}`
-        }
-    });
-    const content = response.data;
-    if (!extractNode) {
+    if (typeof endpoint !== 'string') {
+        throw new TypeError("endpoint must be a string");
+    }
+    if (extractNode !== null && !Array.isArray(extractNode)) {
+        throw new TypeError("extractNode must be a list of strings");
+    }
+    
+    const URL = `${CONST.INFO_URL}${endpoint}`;
+    const headers = { Authorization: `Bearer ${bearer}` };
+    const resp = await axios.get(URL, { headers });
+    const content = resp.data;
+
+    if (extractNode === null) {
         return content;
+    } else {
+        const result = {};
+        extractNode.forEach(node => {
+            if (node in content) {
+                result[node] = content[node];
+            }
+        });
+        return result;
     }
-    return extractNode.reduce((acc, node) => {
-        if (content[node] !== undefined) {
-            acc[node] = content[node];
-        }
-        return acc;
-    }, {});
 }
 
-// Example usage
-app.get('/getAuthUrl', (req, res) => {
-    try {
-        const url = getCodeUrl();
-        res.send({ url });
-    } catch (error) {
-        res.status(500).send({ error: error.message });
-    }
-});
+// Function to retrieve user information
+async function getUserInfo(bearer) {
+    return await getInfo(bearer, "v2/my/info");
+}
 
-app.post('/getToken', async (req, res) => {
-    try {
-        const token = await getToken(req.body.code);
-        res.send({ token });
-    } catch (error) {
-        res.status(500).send({ error: error.message });
-    }
-});
+// Function to retrieve user district information
+async function getUserDistrict(bearer) {
+    return await getInfo(bearer, "v2/my/district");
+}
 
-app.listen(8080, () => console.log('Server running on http://localhost:8080'));
+// Function to retrieve user profiles
+async function getUserProfiles(bearer) {
+    return await getInfo(bearer, "v2/my/profiles");
+}
 
-module.exports = { setConfig, getCodeUrl, getToken, getInfo };
+// Function to retrieve user children information
+async function getUserChildren(bearer) {
+    return await getInfo(bearer, "v2/my/students");
+}
+
+// Function to retrieve user groups
+async function getUserGroups(bearer) {
+    return await getInfo(bearer, "my/groups");
+}
+
+module.exports = {
+    setConfig,
+    getCodeURL,
+    getToken,
+    getUserInfo,
+    getUserDistrict,
+    getUserProfiles,
+    getUserChildren,
+    getUserGroups
+};
