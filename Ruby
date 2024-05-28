@@ -2,88 +2,125 @@ require 'net/http'
 require 'uri'
 require 'json'
 
-# This class handles OAuth interactions, including setting configuration, generating authorization URLs,
-# obtaining access tokens, and making API requests using the access tokens.
-class OAuthService
-  # Class-level variables to store the client ID and secret
-  @@client_id = nil
-  @@client_secret = nil
+# Custom exception for configuration errors
+class ConfigNotSetError < StandardError
+  def initialize(value)
+    @value = "The config is not set. You need to call setConfig(client_Id, client_Secret) before #{value}"
+  end
 
-  # Constants for OAuth and API endpoint URLs
+  def to_s
+    @value
+  end
+end
+
+# Class to hold constant URLs used for authentication and API requests
+class CONST
   AUTH_URL = "https://launchpad.classlink.com/oauth2/v2/auth"
   EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token"
   INFO_URL = "https://nodeapi.classlink.com/"
+end
 
-  # Sets the client ID and client secret for the OAuth service
-  # @param [String] client_id the OAuth client ID
-  # @param [String] client_secret the OAuth client secret
-  def self.set_config(client_id, client_secret)
-    if client_id.empty? || client_secret.empty?
-      raise ArgumentError, 'Client ID and Client Secret must be provided and non-empty.'
-    end
-    @@client_id = client_id
-    @@client_secret = client_secret
+# Global variables to store client ID and client secret
+$clientId = nil
+$clientSecret = nil
+
+# Function to set the client ID and client secret
+def setConfig(client_Id, client_Secret)
+  unless client_Id.is_a?(String)
+    raise ArgumentError, "clientId must be a string"
   end
 
-  # Generates a URL for obtaining the OAuth authorization code
-  # @param [String] scope the scope of the access request
-  # @param [String] redirect_uri the URI to redirect to after authorization
-  # @return [String] the complete URL to direct a user to for authorization
-  def self.get_code_url(scope = 'profile', redirect_uri = 'http://localhost:8080/code')
-    if @@client_id.nil?
-      raise 'Configuration not set. Call set_config before requesting the URL'
-    end
-
-    uri = URI(AUTH_URL)
-    uri.query = URI.encode_www_form({
-      'client_id' => @@client_id,
-      'scope' => scope,
-      'redirect_uri' => redirect_uri,
-      'response_type' => 'code'
-    })
-    uri.to_s
+  unless client_Secret.is_a?(String)
+    raise ArgumentError, "clientSecret must be a string"
   end
 
-  # Retrieves an access token using an authorization code
-  # @param [String] code the authorization code received from the OAuth provider
-  # @return [String] the access token
-  def self.get_token(code)
-    if @@client_id.nil? || @@client_secret.nil?
-      raise 'Configuration not set. Call set_config before requesting the token'
-    end
-    if code.empty?
-      raise ArgumentError, 'Code must be a non-empty string.'
-    end
+  $clientId = client_Id
+  $clientSecret = client_Secret
+end
 
-    uri = URI(EXCHANGE_URL)
-    response = Net::HTTP.post_form(uri, {
-      'client_id' => @@client_id,
-      'client_secret' => @@client_secret,
-      'code' => code
-    })
-    result = JSON.parse(response.body)
-    unless result.key?('access_token')
-      raise 'Token not found in the response'
-    end
-    result['access_token']
+# Function to generate the authorization URL
+def getCodeURL(scope = "profile", redirectURI = "http://localhost:8080/code")
+  raise ConfigNotSetError.new("getCodeURL") unless $clientId
+
+  queryStr = URI.encode_www_form(
+    "client_id" => $clientId,
+    "scope" => scope,
+    "redirect_uri" => redirectURI,
+    "response_type" => "code"
+  )
+
+  "#{CONST::AUTH_URL}?#{queryStr}"
+end
+
+# Function to exchange authorization code for access token
+def getToken(code)
+  raise ConfigNotSetError.new("getToken") unless $clientId && $clientSecret
+
+  unless code.is_a?(String)
+    raise TypeError, "code must be a string"
   end
 
-  # Makes a GET request to an API endpoint using an access token
-  # @param [String] bearer the access token
-  # @param [String] endpoint the API endpoint to request data from
-  # @return [Hash] parsed JSON response from the API
-  def self.get_info(bearer, endpoint)
-    if bearer.empty? || endpoint.empty?
-      raise ArgumentError, 'Bearer token and endpoint must be non-empty strings.'
-    end
+  uri = URI(CONST::EXCHANGE_URL)
+  payload = {
+    'client_id' => $clientId,
+    'client_secret' => $clientSecret,
+    'code' => code
+  }
 
-    uri = URI("#{INFO_URL}#{endpoint}")
-    request = Net::HTTP::Get.new(uri)
-    request['Authorization'] = "Bearer #{bearer}"
+  response = Net::HTTP.post_form(uri, payload)
+  raise "Request failed with response code #{response.code}" unless response.is_a?(Net::HTTPSuccess)
 
-    response = Net::HTTP.start(uri.hostname, uri.port, use_ssl: uri.scheme == 'https') do |http|
-      http.request(request)
-    end
-    JSON.parse(response.body)
+  JSON.parse(response.body)["access_token"]
+end
+
+# Function to retrieve information from the API
+def getInfo(bearer, endpoint, extractNode = nil)
+  unless bearer.is_a?(String)
+    raise TypeError, "bearer must be a string"
   end
+
+  unless endpoint.is_a?(String)
+    raise TypeError, "endpoint must be a string"
+  end
+
+  if extractNode && !extractNode.is_a?(Array)
+    raise TypeError, "extractNode must be a list of strings"
+  end
+
+  url = URI("#{CONST::INFO_URL}#{endpoint}")
+  request = Net::HTTP::Get.new(url)
+  request["Authorization"] = "Bearer #{bearer}"
+
+  response = Net::HTTP.start(url.hostname, url.port, use_ssl: true) { |http| http.request(request) }
+  raise "Request failed with response code #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+  content = JSON.parse(response.body)
+  return content unless extractNode
+
+  content.slice(*extractNode)
+end
+
+# Function to retrieve user information
+def getUserInfo(bearer)
+  getInfo(bearer, "v2/my/info")
+end
+
+# Function to retrieve user district information
+def getUserDistrict(bearer)
+  getInfo(bearer, "v2/my/district")
+end
+
+# Function to retrieve user profiles
+def getUserProfiles(bearer)
+  getInfo(bearer, "v2/my/profiles")
+end
+
+# Function to retrieve user children information
+def getUserChildren(bearer)
+  getInfo(bearer, "v2/my/students")
+end
+
+# Function to retrieve user groups
+def getUserGroups(bearer)
+  getInfo(bearer, "my/groups")
 end
