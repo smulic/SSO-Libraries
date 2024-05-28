@@ -1,87 +1,158 @@
 import java.io.IOException;
-import java.net.URI;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.net.http.HttpResponse.BodyHandlers;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.StringJoiner;
+import java.util.Scanner;
 
-public class OAuthService {
-    private static String clientId = null;
-    private static String clientSecret = null;
+import org.json.JSONObject;
 
-    private static final String AUTH_URL = "https://launchpad.classlink.com/oauth2/v2/auth";
-    private static final String EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token";
-    private static final String INFO_URL = "https://nodeapi.classlink.com/";
+public class OAuthClient {
 
-    // Set OAuth client configuration settings
-    public static void setConfig(String clientId, String clientSecret) {
-        OAuthService.clientId = clientId;
-        OAuthService.clientSecret = clientSecret;
-    }
-
-    // Generate the URL for obtaining the authorization code
-    public static String getCodeUrl(String scope, String redirectUri) throws Exception {
-        if (clientId == null || clientId.isEmpty()) {
-            throw new Exception("Configuration not set. Call setConfig before requesting the URL.");
+    // Custom exception for configuration errors
+    public static class ConfigNotSetError extends Exception {
+        public ConfigNotSetError(String value) {
+            super("The config is not set. You need to call setConfig(client_Id, client_Secret) before " + value);
         }
-        Map<String, String> parameters = new HashMap<>();
-        parameters.put("client_id", clientId);
-        parameters.put("scope", scope);
-        parameters.put("redirect_uri", redirectUri);
-        parameters.put("response_type", "code");
-
-        return AUTH_URL + "?" + encodeParameters(parameters);
     }
 
-    // Request the access token using the authorization code
-    public static String getToken(String code) throws IOException, InterruptedException {
-        if (clientId == null || clientSecret == null || clientId.isEmpty() || clientSecret.isEmpty()) {
-            throw new IllegalStateException("Configuration not set. Call setConfig before requesting the token.");
+    // Class to hold constant URLs used for authentication and API requests
+    public static class CONST {
+        public static final String AUTH_URL = "https://launchpad.classlink.com/oauth2/v2/auth";
+        public static final String EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token";
+        public static final String INFO_URL = "https://nodeapi.classlink.com/";
+    }
+
+    // Global variables to store client ID and client secret
+    private static String clientId;
+    private static String clientSecret;
+
+    // Function to set the client ID and client secret
+    public static void setConfig(String client_Id, String client_Secret) throws IllegalArgumentException {
+        if (client_Id == null || client_Id.isEmpty()) {
+            throw new IllegalArgumentException("clientId must be a string");
+        }
+        if (client_Secret == null || client_Secret.isEmpty()) {
+            throw new IllegalArgumentException("clientSecret must be a string");
+        }
+        clientId = client_Id;
+        clientSecret = client_Secret;
+    }
+
+    // Function to generate the authorization URL
+    public static String getCodeURL(String scope, String redirectURI) throws ConfigNotSetError, IOException {
+        if (clientId == null || clientId.isEmpty()) {
+            throw new ConfigNotSetError("getCodeURL");
+        }
+        if (scope == null) {
+            scope = "profile";
+        }
+        if (redirectURI == null) {
+            redirectURI = "http://localhost:8080/code";
+        }
+        String queryStr = String.format("client_id=%s&scope=%s&redirect_uri=%s&response_type=code", 
+                                        URLEncoder.encode(clientId, "UTF-8"), 
+                                        URLEncoder.encode(scope, "UTF-8"), 
+                                        URLEncoder.encode(redirectURI, "UTF-8"));
+        return CONST.AUTH_URL + "?" + queryStr;
+    }
+
+    // Function to exchange authorization code for access token
+    public static String getToken(String code) throws ConfigNotSetError, IOException {
+        if (clientId == null || clientSecret == null) {
+            throw new ConfigNotSetError("getToken");
         }
         if (code == null || code.isEmpty()) {
-            throw new IllegalArgumentException("Code must be a non-empty string.");
+            throw new IllegalArgumentException("code must be a string");
         }
 
-        Map<String, String> parameters = new HashMap<>();
-        parameters.put("client_id", clientId);
-        parameters.put("client_secret", clientSecret);
-        parameters.put("code", code);
+        URL url = new URL(CONST.EXCHANGE_URL);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        String payload = String.format("client_id=%s&client_secret=%s&code=%s",
+                                       URLEncoder.encode(clientId, "UTF-8"),
+                                       URLEncoder.encode(clientSecret, "UTF-8"),
+                                       URLEncoder.encode(code, "UTF-8"));
+        conn.getOutputStream().write(payload.getBytes());
+        int responseCode = conn.getResponseCode();
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(EXCHANGE_URL))
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .POST(HttpRequest.BodyPublishers.ofString(encodeParameters(parameters)))
-                .build();
-
-        HttpResponse<String> response = HttpClient.newHttpClient().send(request, BodyHandlers.ofString());
-        return response.body(); // Here you would parse the JSON to extract the access token
-    }
-
-    // Make an API request to the specified endpoint using the access token
-    public static String getInfo(String bearer, String endpoint) throws IOException, InterruptedException {
-        if (bearer == null || bearer.isEmpty() || endpoint == null || endpoint.isEmpty()) {
-            throw new IllegalArgumentException("Bearer token and endpoint must be non-empty strings.");
+        if (responseCode != 200) {
+            throw new IOException("HTTP request failed with code " + responseCode);
         }
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(INFO_URL + endpoint))
-                .header("Authorization", "Bearer " + bearer)
-                .GET()
-                .build();
+        Scanner scanner = new Scanner(conn.getInputStream());
+        String response = scanner.useDelimiter("\\A").next();
+        scanner.close();
 
-        HttpResponse<String> response = HttpClient.newHttpClient().send(request, BodyHandlers.ofString());
-        return response.body(); // Here you would parse the JSON and possibly extract specific nodes
+        JSONObject jsonResponse = new JSONObject(response);
+        return jsonResponse.getString("access_token");
     }
 
-    // Helper method to URL-encode the parameters
-    private static String encodeParameters(Map<String, String> parameters) {
-        StringJoiner sj = new StringJoiner("&");
-        parameters.forEach((key, value) -> sj.add(URLEncoder.encode(key, StandardCharsets.UTF_8) + "=" + URLEncoder.encode(value, StandardCharsets.UTF_8)));
-        return sj.toString();
+    // Function to retrieve information from the API
+    public static Map<String, Object> getInfo(String bearer, String endpoint, List<String> extractNode) throws IOException {
+        if (bearer == null || bearer.isEmpty()) {
+            throw new IllegalArgumentException("bearer must be a string");
+        }
+        if (endpoint == null || endpoint.isEmpty()) {
+            throw new IllegalArgumentException("endpoint must be a string");
+        }
+
+        URL url = new URL(CONST.INFO_URL + endpoint);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("Authorization", "Bearer " + bearer);
+
+        int responseCode = conn.getResponseCode();
+
+        if (responseCode != 200) {
+            throw new IOException("HTTP request failed with code " + responseCode);
+        }
+
+        Scanner scanner = new Scanner(conn.getInputStream());
+        String response = scanner.useDelimiter("\\A").next();
+        scanner.close();
+
+        JSONObject jsonResponse = new JSONObject(response);
+        Map<String, Object> content = jsonResponse.toMap();
+
+        if (extractNode == null) {
+            return content;
+        } else {
+            Map<String, Object> result = new HashMap<>();
+            for (String node : extractNode) {
+                if (content.containsKey(node)) {
+                    result.put(node, content.get(node));
+                }
+            }
+            return result;
+        }
+    }
+
+    // Function to retrieve user information
+    public static Map<String, Object> getUserInfo(String bearer) throws IOException {
+        return getInfo(bearer, "v2/my/info", null);
+    }
+
+    // Function to retrieve user district information
+    public static Map<String, Object> getUserDistrict(String bearer) throws IOException {
+        return getInfo(bearer, "v2/my/district", null);
+    }
+
+    // Function to retrieve user profiles
+    public static Map<String, Object> getUserProfiles(String bearer) throws IOException {
+        return getInfo(bearer, "v2/my/profiles", null);
+    }
+
+    // Function to retrieve user children information
+    public static Map<String, Object> getUserChildren(String bearer) throws IOException {
+        return getInfo(bearer, "v2/my/students", null);
+    }
+
+    // Function to retrieve user groups
+    public static Map<String, Object> getUserGroups(String bearer) throws IOException {
+        return getInfo(bearer, "my/groups", null);
     }
 }
