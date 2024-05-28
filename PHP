@@ -1,85 +1,156 @@
 <?php
-require 'net/http'
-require 'uri'
-require 'json'
 
-// Class responsible for handling OAuth interactions including setting configuration,
-// generating authorization URLs, obtaining access tokens, and making API requests.
-class OAuthService
-{
-    // Class-level variables to store OAuth credentials
-    private static $clientId = null;
-    private static $clientSecret = null;
+// Custom exception for configuration errors
+class ConfigNotSetError extends Exception {
+    public function __construct($value) {
+        $this->message = "The config is not set. You need to call setConfig(client_Id, client_Secret) before " . $value;
+    }
+}
 
-    // URLs for OAuth and API endpoints
+// Class to hold constant URLs used for authentication and API requests
+class CONSTS {
     const AUTH_URL = "https://launchpad.classlink.com/oauth2/v2/auth";
     const EXCHANGE_URL = "https://launchpad.classlink.com/oauth2/v2/token";
     const INFO_URL = "https://nodeapi.classlink.com/";
+}
 
-    // Set OAuth client configuration settings
-    public static function setConfig($clientId, $clientSecret)
-    {
-        if (empty($clientId) || empty($clientSecret)) {
-            throw new Exception('Client ID and Client Secret must be provided and non-empty.');
-        }
-        self::$clientId = $clientId;
-        self::$clientSecret = $clientSecret;
+// Global variables to store client ID and client secret
+$clientId = null;
+$clientSecret = null;
+
+// Function to set the client ID and client secret
+function setConfig($client_Id, $client_Secret) {
+    global $clientId, $clientSecret;
+    if (!is_string($client_Id)) {
+        throw new InvalidArgumentException("clientId must be a string");
+    }
+    if (!is_string($client_Secret)) {
+        throw new InvalidArgumentException("clientSecret must be a string");
+    }
+    $clientId = $client_Id;
+    $clientSecret = $client_Secret;
+}
+
+// Function to generate the authorization URL
+function getCodeURL($scope = "profile", $redirectURI = "http://localhost:8080/code") {
+    global $clientId;
+    if (!$clientId) {
+        throw new ConfigNotSetError("getCodeURL");
+    }
+    $queryStr = http_build_query([
+        "client_id" => $clientId,
+        "scope" => $scope,
+        "redirect_uri" => $redirectURI,
+        "response_type" => "code"
+    ]);
+    return CONSTS::AUTH_URL . "?" . $queryStr;
+}
+
+// Function to exchange authorization code for access token
+function getToken($code) {
+    global $clientId, $clientSecret;
+    if (!$clientId || !$clientSecret) {
+        throw new ConfigNotSetError("getToken");
+    }
+    if (!is_string($code)) {
+        throw new InvalidArgumentException("code must be a string");
+    }
+    $payload = [
+        'client_id' => $clientId,
+        'client_secret' => $clientSecret,
+        'code' => $code
+    ];
+    $response = requests_post(CONSTS::EXCHANGE_URL, $payload);
+    return $response['access_token'];
+}
+
+// Helper function to send POST requests and handle errors
+function requests_post($url, $data) {
+    $options = [
+        'http' => [
+            'header'  => "Content-type: application/x-www-form-urlencoded\r\n",
+            'method'  => 'POST',
+            'content' => http_build_query($data)
+        ]
+    ];
+    $context  = stream_context_create($options);
+    $result = file_get_contents($url, false, $context);
+    if ($result === FALSE) {
+        throw new Exception("HTTP request failed");
+    }
+    return json_decode($result, true);
+}
+
+// Function to retrieve information from the API
+function getInfo($bearer, $endpoint, $extractNode = null) {
+    if (!is_string($bearer)) {
+        throw new InvalidArgumentException("bearer must be a string");
+    }
+    if (!is_string($endpoint)) {
+        throw new InvalidArgumentException("endpoint must be a string");
+    }
+    if ($extractNode !== null && !is_array($extractNode)) {
+        throw new InvalidArgumentException("extractNode must be a list of strings");
     }
 
-    // Generates the URL for obtaining the OAuth authorization code
-    public static function getCodeUrl($scope = 'profile', $redirectUri = 'http://localhost:8080/code')
-    {
-        if (empty(self::$clientId)) {
-            throw new Exception('Configuration not set. Call setConfig before requesting the URL.');
+    $url = CONSTS::INFO_URL . $endpoint;
+    $headers = [
+        "Authorization: Bearer $bearer"
+    ];
+    $response = requests_get($url, $headers);
+    $content = json_decode($response, true);
+
+    if ($extractNode === null) {
+        return $content;
+    } else {
+        $result = [];
+        foreach ($extractNode as $node) {
+            if (array_key_exists($node, $content)) {
+                $result[$node] = $content[$node];
+            }
         }
-
-        $uri = new URI(self::AUTH_URL);
-        $uri->query = http_build_query([
-            'client_id' => self::$clientId,
-            'scope' => $scope,
-            'redirect_uri' => $redirectUri,
-            'response_type' => 'code'
-        ]);
-        return $uri->toString();
-    }
-
-    // Retrieves an access token using an authorization code
-    public static function getToken($code)
-    {
-        if (empty(self::$clientId) || empty(self::$clientSecret)) {
-            throw new Exception('Configuration not set. Call setConfig before requesting the token.');
-        }
-        if (empty($code)) {
-            throw new Exception('Code must be a non-empty string.');
-        }
-
-        $uri = new URI(self::EXCHANGE_URL);
-        $response = Net::HTTP.post_form($uri, [
-            'client_id' => self::$clientId,
-            'client_secret' => self::$clientSecret,
-            'code' => $code
-        ]);
-        $result = json_decode($response->body);
-        if (!isset($result->access_token)) {
-            throw new Exception('Token not found in the response');
-        }
-        return $result->access_token;
-    }
-
-    // Makes a GET request to an API endpoint using an access token
-    public static function getInfo($bearer, $endpoint)
-    {
-        if (empty($bearer) || empty($endpoint)) {
-            throw new Exception('Bearer token and endpoint must be non-empty strings.');
-        }
-
-        $uri = new URI(self::INFO_URL . $endpoint);
-        $request = new Net::HTTP::Get($uri);
-        $request['Authorization'] = "Bearer {$bearer}";
-
-        $response = Net::HTTP.start($uri->hostname, $uri->port, ['use_ssl' => $uri->scheme === 'https']) do |http|
-            http.request(request);
-        end;
-        return json_decode($response->body);
+        return $result;
     }
 }
+
+// Helper function to send GET requests and handle errors
+function requests_get($url, $headers) {
+    $options = [
+        'http' => [
+            'header' => implode("\r\n", $headers),
+            'method' => 'GET'
+        ]
+    ];
+    $context  = stream_context_create($options);
+    $result = file_get_contents($url, false, $context);
+    if ($result === FALSE) {
+        throw new Exception("HTTP request failed");
+    }
+    return $result;
+}
+
+// Function to retrieve user information
+function getUserInfo($bearer) {
+    return getInfo($bearer, "v2/my/info");
+}
+
+// Function to retrieve user district information
+function getUserDistrict($bearer) {
+    return getInfo($bearer, "v2/my/district");
+}
+
+// Function to retrieve user profiles
+function getUserProfiles($bearer) {
+    return getInfo($bearer, "v2/my/profiles");
+}
+
+// Function to retrieve user children information
+function getUserChildren($bearer) {
+    return getInfo($bearer, "v2/my/students");
+}
+
+// Function to retrieve user groups
+function getUserGroups($bearer) {
+    return getInfo($bearer, "my/groups");
+}
+?>
